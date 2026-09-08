@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: seo-optimizer-backend
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      # Set the real value in the Render dashboard after first deploy —
+      # marking it "sync: false" means Render won't ask for it in this file
+      # and won't ever display/commit it in plaintext.
+      - key: OPENAI_API_KEY
+        sync: false
+      # Comma-separated list of frontend origins allowed to call this API.
+      # Set this to your actual Vercel URL, e.g. https://your-app.vercel.app
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: PYTHONUNBUFFERED
+        value: "1"
