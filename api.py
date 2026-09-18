@@ -24,18 +24,13 @@ app = FastAPI(
     version="2.0.0",
 )
 
-# Comma-separated in the ALLOWED_ORIGINS env var, e.g.
-# "https://your-app.vercel.app,http://localhost:3000". Defaults to local dev only.
-_allowed_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",") if o.strip()]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_allowed_origins,
+    allow_origins=["http://localhost:3000"],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
