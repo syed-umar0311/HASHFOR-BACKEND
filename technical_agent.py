@@ -2,16 +2,18 @@
 technical_agent.py — 🔵 TECHNICAL OPTIMIZATION AGENT
 
 Owns everything that makes the site crawlable, renderable, and indexable:
-  - robots.txt
+  - robots.txt (incl. explicit AI-bot access rules — AEO Parameter 7)
   - sitemap.xml / sitemap.js (Next.js sitemap route)
+  - llms.txt (AEO Parameter 10 — AI Discoverability, emerging convention)
   - Canonical tags
   - noindex handling
   - Redirects (next.config.js)
   - hreflang
   - A diagnostic report for things that can't be "fixed" by editing files
     alone (HTTPS, page speed, Core Web Vitals, mobile rendering, JS
-    rendering, 404/5xx) — these need a live crawl/Lighthouse run, so this
-    agent flags them clearly instead of pretending to fix them blind.
+    rendering, 404/5xx, orphan pages) — these need a live crawl/Lighthouse
+    run or a link graph, so this agent flags them clearly instead of
+    pretending to fix them blind.
 
 Does NOT touch: title, meta description, headings, keywords, alt text,
 internal links, JSON-LD content, OG/Twitter tags — that's onpage_agent.py.
@@ -20,26 +22,70 @@ import re
 from pathlib import Path
 from typing import List
 
-from common import Row, Context, run, safe_write
+from common import Row, Context, run, get_site_name, safe_write
 
 CANONICAL_START = "// TECHNICAL-CANONICAL-START"
 CANONICAL_END = "// TECHNICAL-CANONICAL-END"
 
+# Known AI/LLM crawlers as of early 2026. Listed explicitly (rather than
+# relying on the blanket "User-agent: *" rule) because some site owners
+# block these individually elsewhere, and being explicit here makes the
+# intent auditable — this directly targets AEO Parameter 7 (AI Crawlability
+# & Bot Access), which checks for named AI-bot permissions, not just a
+# generic wildcard allow.
+AI_BOTS = [
+    "GPTBot", "ChatGPT-User", "OAI-SearchBot",   # OpenAI
+    "ClaudeBot", "anthropic-ai", "Claude-Web",   # Anthropic
+    "Google-Extended",                             # Google Gemini/AI training
+    "PerplexityBot", "Perplexity-User",           # Perplexity
+    "CCBot",                                       # Common Crawl (feeds many LLMs)
+    "Amazonbot",                                   # Amazon/Alexa
+    "Bytespider",                                  # ByteDance
+    "Applebot-Extended",                           # Apple Intelligence
+]
+
 
 # ---------------------------
-# Site-level: robots.txt
+# Site-level: robots.txt (AEO Parameter 7 — AI Crawlability & Bot Access)
 # ---------------------------
 def write_robots_txt(ctx: Context):
     public_dir = ctx.repo_dir / ("public" if (ctx.repo_dir / "public").exists() else ".")
     target = public_dir / "robots.txt"
     site = ctx.site_base.rstrip("/")
+
+    ai_bot_rules = "\n\n".join(f"User-agent: {bot}\nAllow: /" for bot in AI_BOTS)
+
     content = f"""User-agent: *
 Allow: /
 Disallow: /admin
 Disallow: /api/
 
+# --- AI / LLM crawlers explicitly allowed (AEO: AI Crawlability & Bot Access) ---
+{ai_bot_rules}
+
 Sitemap: {site}/sitemap.xml
 """
+    safe_write(target, target.read_text(encoding="utf-8") if target.exists() else "", content)
+
+
+# ---------------------------
+# Site-level: llms.txt (AEO Parameter 10 — AI Discoverability)
+# An emerging convention (llmstxt.org): a plain-language index of the site's
+# most important pages, written for an LLM to read directly rather than
+# crawl and infer. Not yet a formal standard any model is required to honor,
+# but costs nothing to provide and several AI crawlers already check for it.
+# ---------------------------
+def write_llms_txt(ctx: Context, rows: List[Row]):
+    public_dir = ctx.repo_dir / ("public" if (ctx.repo_dir / "public").exists() else ".")
+    target = public_dir / "llms.txt"
+    site_name = get_site_name(ctx.site_base)
+
+    lines = [f"# {site_name}", "", f"> {site_name} — key pages for AI systems and answer engines.", "", "## Pages"]
+    for r in rows:
+        title = r.title or r.url
+        desc = (r.meta_description or "").strip()
+        lines.append(f"- [{title}]({r.url}){': ' + desc if desc else ''}")
+    content = "\n".join(lines) + "\n"
     safe_write(target, target.read_text(encoding="utf-8") if target.exists() else "", content)
 
 
@@ -120,20 +166,25 @@ export const technicalMetadata = {{
 """
 
 
-def apply_page_level(file: Path, row: Row, locales: List[str]):
+def apply_page_level(file: Path, row: Row, locales: List[str]) -> bool:
+    """Returns True if this page is a client component ("use client") — AEO
+    Parameter 8 (AI Rendering & Content Accessibility) cares about this,
+    since content in a client component may not be present in the initial
+    server-rendered HTML that non-JS-executing crawlers see."""
     if not file.exists():
         print(f"   ❌ [technical] Skipping — file does not exist: {file}")
-        return
+        return False
     original = file.read_text(encoding="utf-8")
     is_client = original.lstrip().startswith(('"use client"', "'use client'"))
     if is_client:
         print(f"   ℹ️  Client component, skipping metadata-level technical fix: {file}")
-        return
+        return True
     block = build_canonical_block(row, locales)
     pattern = re.compile(rf"{re.escape(CANONICAL_START)}.*?{re.escape(CANONICAL_END)}", re.DOTALL)
     content = pattern.sub(block, original) if pattern.search(original) else original + "\n" + block
     content = content.replace("\r\n", "\n")
     safe_write(file, original, content)
+    return False
 
 
 # ---------------------------
@@ -154,14 +205,44 @@ def ensure_redirects_scaffold(ctx: Context):
 # ---------------------------
 # Diagnostic-only report for things this agent can't blind-fix
 # ---------------------------
-def write_technical_report(ctx: Context, rows: List[Row]):
+def write_technical_report(ctx: Context, rows: List[Row], client_component_urls: List[str] = None):
+    client_component_urls = client_component_urls or []
+    orphans = [r.url for r in rows if r.internal_links == 0]
+
     lines = [
         "# Technical SEO Report (auto-generated)",
         "",
-        "These items need a live crawl / Lighthouse / PageSpeed Insights run against",
-        "the deployed site — they are flagged here rather than blind-edited, since",
-        "editing source files can't verify HTTPS config, real load performance, or",
-        "server response codes.",
+        "## AI Crawlability & Bot Access (AEO Parameter 7)",
+        f"robots.txt now explicitly allows: {', '.join(AI_BOTS)}.",
+        "Verify none of these are blocked elsewhere (CDN/WAF rules, Cloudflare bot-fight mode, etc.) —",
+        "robots.txt only controls what your own server declares, not upstream network-level blocks.",
+        "",
+        "## AI Rendering & Content Accessibility (AEO Parameter 8)",
+    ]
+    if client_component_urls:
+        lines.append("These pages are client components (`\"use client\"`) — their main content may not")
+        lines.append("be present in the initial server-rendered HTML that some AI crawlers read without")
+        lines.append("executing JavaScript. Consider moving primary content to a server component, or")
+        lines.append("verify with 'view source' that the important text is actually there pre-hydration:")
+        lines += [f"- {u}" for u in client_component_urls]
+    else:
+        lines.append("No client components detected among the mapped pages — content should be present")
+        lines.append("in the initial server-rendered HTML.")
+
+    lines += [
+        "",
+        "## AI Discoverability (AEO Parameter 10)",
+        "llms.txt and sitemap.xml/sitemap.js are generated. Orphan-page check (pages with",
+        "zero detected internal links pointing to them, from your CSV's `internal_links` column):",
+    ]
+    if orphans:
+        lines += [f"- ⚠️ {u} — no internal links found; add links to it from other pages" for u in orphans]
+    else:
+        lines.append("None found — every page has at least one internal link (or the CSV didn't report this column).")
+
+    lines += [
+        "",
+        "## HTTPS / mobile viewport / canonical (from CSV)",
         "",
         "| URL | HTTPS | Notes |",
         "|---|---|---|",
@@ -174,6 +255,7 @@ def write_technical_report(ctx: Context, rows: List[Row]):
         if r.canonical_tag and r.canonical_tag.lower() == "false":
             notes.append("no canonical tag")
         lines.append(f"| {r.url} | {https_ok} | {'; '.join(notes) or '—'} |")
+
     lines += [
         "",
         "## Still to check manually / with a live tool",
@@ -194,13 +276,17 @@ def run_technical_agent(rows: List[Row], ctx: Context, locales: List[str] = None
     write_robots_txt(ctx)
     write_sitemap_xml(ctx, urls)
     write_sitemap_js(ctx, urls)
+    write_llms_txt(ctx, rows)
     ensure_redirects_scaffold(ctx)
+    client_component_urls = []
     for i, row in enumerate(rows, 1):
         target = ctx.url_to_file.get(row.url)
         if not target:
             print(f"   ❌ No file mapped for {row.url}")
             continue
         print(f"[{i}/{len(rows)}] 🔵 Technical: {row.url}")
-        apply_page_level(target, row, locales)
-    write_technical_report(ctx, rows)
+        is_client = apply_page_level(target, row, locales)
+        if is_client:
+            client_component_urls.append(row.url)
+    write_technical_report(ctx, rows, client_component_urls)
     print("🔵 TECHNICAL AGENT — done")

@@ -53,6 +53,10 @@ Return ONLY valid JSON:
   "heading_fixes": "One short paragraph describing how H1/H2/H3 should be restructured for this page",
   "content_clarity_notes": "One short paragraph on how to make the copy clearer/briefer/better structured",
   "keywords": ["8 relevant keywords/topics, ordered by importance"],
+  "answer_first_summary": "A 2-3 sentence, self-contained answer to the single question this page most likely exists to answer — written so it could be quoted verbatim by an AI answer engine as a direct response, with no pronouns or context from earlier on the page needed",
+  "extractability_notes": "One short paragraph on how to restructure the body copy into short, self-contained, independently-quotable chunks: shorter paragraphs, more lists/tables, one idea per paragraph, front-loaded conclusions",
+  "entity_type": "The primary schema.org entity type this page is about, e.g. Organization, Product, Service, Person, Article",
+  "entity_attributes": ["3-6 key attributes/facts that define this entity, e.g. founding year, category, key feature"],
   "faq_schema": [
     {{"question": "...", "answer": "..."}},
     {{"question": "...", "answer": "..."}},
@@ -71,6 +75,11 @@ Return ONLY valid JSON:
     data.setdefault("new_meta_description", row.meta_description or f"Explore {site_name} for professional services.")
     data.setdefault("heading_fixes", "Ensure exactly one H1, then a logical H2 > H3 hierarchy matching content sections.")
     data.setdefault("content_clarity_notes", "Break long paragraphs into shorter ones, add subheadings, lead with the answer.")
+    data.setdefault("answer_first_summary", data.get("speakable_snippet") or f"{site_name} provides professional services — see below for details.")
+    data.setdefault("extractability_notes", "Use short paragraphs (2-3 sentences), bullet lists for steps/features, and put the conclusion first in each section.")
+    data.setdefault("entity_type", "Organization")
+    if not data.get("entity_attributes"):
+        data["entity_attributes"] = []
     if not data.get("keywords"):
         raw = re.sub(r":\d+\.\d+%", "", row.top_keywords or "")
         data["keywords"] = [k.strip() for k in re.split(r"[,\|;]", raw) if k.strip()][:8] or \
@@ -124,9 +133,30 @@ def build_internal_link_suggestions(rows: List[Row]) -> Dict[str, List[str]]:
 # ---------------------------
 # Schema + JSX injection
 # ---------------------------
-def build_schemas(row: Row, s: Dict, site_base: str) -> List[str]:
+def build_breadcrumb_schema(row: Row, site_base: str) -> Dict:
+    """AEO Parameter 9 (Machine-Readable Structure) — BreadcrumbList so AI
+    systems and search engines can understand the page's place in the site
+    hierarchy, derived from the URL path segments (no extra data needed)."""
     site_name = get_site_name(site_base)
-    schemas = [{
+    parsed_path = row.url.split("://", 1)[-1].split("/", 1)
+    path = parsed_path[1] if len(parsed_path) > 1 else ""
+    segments = [seg for seg in path.strip("/").split("/") if seg]
+
+    items = [{"@type": "ListItem", "position": 1, "name": site_name, "item": site_base}]
+    accumulated = site_base.rstrip("/")
+    for i, seg in enumerate(segments, start=2):
+        accumulated += f"/{seg}"
+        label = seg.replace("-", " ").replace("_", " ").title()
+        items.append({"@type": "ListItem", "position": i, "name": label, "item": accumulated})
+
+    return {"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": items}
+
+
+def build_schemas(row: Row, s: Dict, site_base: str) -> List[str]:
+    from datetime import date
+
+    site_name = get_site_name(site_base)
+    webpage_schema = {
         "@context": "https://schema.org",
         "@type": "WebPage",
         "url": row.url,
@@ -137,7 +167,22 @@ def build_schemas(row: Row, s: Dict, site_base: str) -> List[str]:
             "@type": "SpeakableSpecification",
             "xpath": ["/html/head/title", "/html/head/meta[@name='description']/@content"],
         },
-    }]
+        # AEO Parameter 14 (Trust, Evidence & Authority) — freshness signal.
+        # Best-effort: this is the date the agent last touched the page, not
+        # necessarily when the underlying content itself changed.
+        "dateModified": date.today().isoformat(),
+    }
+    # AEO Parameter 13 (Topical, Semantic & Entity Optimization) — tell AI
+    # systems what kind of thing this page is about, plus its key facts.
+    if s.get("entity_type") or s.get("entity_attributes"):
+        webpage_schema["about"] = {
+            "@type": s.get("entity_type") or "Organization",
+            "name": site_name,
+        }
+        if s.get("entity_attributes"):
+            webpage_schema["about"]["description"] = "; ".join(s["entity_attributes"])
+
+    schemas = [webpage_schema, build_breadcrumb_schema(row, site_base)]
     if s.get("faq_schema"):
         schemas.append({
             "@context": "https://schema.org",
@@ -259,6 +304,9 @@ def build_onpage_block(s: Dict, row: Row, site_base: str, internal_links: List[s
 // Suggested internal links for this page: {links_comment}
 // Heading structure notes: {esc(s['heading_fixes'])}
 // Content clarity notes: {esc(s['content_clarity_notes'])}
+// Answer-first summary (AEO 11) — lead the page/section with this: {esc(s.get('answer_first_summary', ''))}
+// Extractability notes (AEO 12): {esc(s.get('extractability_notes', ''))}
+// Entity type (AEO 13): {esc(s.get('entity_type', ''))} — attributes: {esc('; '.join(s.get('entity_attributes', [])))}
 export const onPageMetadata = {{
   title: "{title}",
   description: "{desc}",

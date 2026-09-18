@@ -148,6 +148,8 @@ class Row:
     top_keywords: str = ""
     seo_score: int = 0
     seo_suggestions: str = ""
+    internal_links: int = 0   # used for orphan-page detection (AI Discoverability)
+    external_links: int = 0
 
 
 @dataclass
@@ -189,6 +191,8 @@ def parse_csv(path: str) -> List[Row]:
                     top_keywords=r.get("top_keywords", ""),
                     seo_score=int(r.get("seo_score", 0) or 0),
                     seo_suggestions=r.get("seo_suggestions", ""),
+                    internal_links=int(r.get("internal_links", 0) or 0),
+                    external_links=int(r.get("external_links", 0) or 0),
                 )
             )
     return rows

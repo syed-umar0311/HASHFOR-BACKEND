@@ -9,8 +9,8 @@ common plumbing (`common.py`). Off-page is **not** built yet, per your call —
 | File | What it owns |
 |---|---|
 | `common.py` | Git clone/push, stack detection, URL→file mapping, CSV parsing, OpenAI call, safe file writes. No optimization logic. |
-| `onpage_agent.py` | 🟢 Title, meta description, H1/H2/H3 structure notes, keywords, content clarity notes, internal link suggestions, alt-text flags, JSON-LD (WebPage/FAQ/HowTo), Open Graph, Twitter tags. |
-| `technical_agent.py` | 🔵 `robots.txt`, `sitemap.xml` + Next.js `sitemap.ts`, canonical tags, noindex handling, hreflang, a redirects() scaffold check, and a `TECHNICAL_SEO_REPORT.md` for things that need a live crawl (HTTPS, page speed, Core Web Vitals, 404/5xx, mobile/JS rendering — these can't be safely "fixed" by editing source files blind). |
+| `onpage_agent.py` | 🟢 Title, meta description, H1/H2/H3 structure notes, keywords, content clarity notes, internal link suggestions, alt-text flags, JSON-LD (WebPage w/ `dateModified` + entity typing, BreadcrumbList, FAQ, HowTo), Open Graph, Twitter tags, answer-first summary, extractability notes — maps to AEO parameters 9, 11, 12, 13, 14. |
+| `technical_agent.py` | 🔵 `robots.txt` (incl. explicit AI-bot allowlist), `llms.txt`, `sitemap.xml` + Next.js `sitemap.js`, canonical tags, noindex handling, hreflang, orphan-page + client-component detection, a redirects() scaffold check, and `TECHNICAL_SEO_REPORT.md` for things that need a live crawl (HTTPS, page speed, Core Web Vitals, 404/5xx) — maps to AEO parameters 7, 8, 10. |
 | `orchestrator.py` | Clones the repo once, runs whichever agents you ask for, commits **each agent separately** (clean git history), pushes. |
 | `api.py` | FastAPI wrapper — a form where you pick "on-page / technical / both", upload your CSV, and it runs + pushes. |
 

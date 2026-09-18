@@ -24,9 +24,13 @@ app = FastAPI(
     version="2.0.0",
 )
 
+# Comma-separated in the ALLOWED_ORIGINS env var, e.g.
+# "https://your-app.vercel.app,http://localhost:3000". Defaults to local dev only.
+_allowed_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=_allowed_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -176,5 +180,7 @@ async def cleanup_file(file_path: str):
 
 
 if __name__ == "__main__":
+    # Render sets $PORT dynamically; the Dockerfile's CMD reads it directly,
+    # but this path (running `python api.py` locally) needs the same fallback.
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=7860)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 7860)))
