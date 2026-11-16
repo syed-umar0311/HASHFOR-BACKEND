@@ -179,6 +179,102 @@ async def cleanup_file(file_path: str):
         logger.warning(f"Cleanup failed: {e}")
 
 
+# ---------------------------------------------------------------------------
+# Shopify / WordPress auto-push. Separate from /run so the GitHub flow is
+# untouched. Called server-to-server by the Hashfor app (tokens never go
+# through the browser). If AGENT_API_KEY is set, the X-Agent-Key header must match.
+# ---------------------------------------------------------------------------
+from typing import List as _List, Optional as _Optional
+from fastapi import Header
+from pydantic import BaseModel, Field
+
+
+class CmsRunRequest(BaseModel):
+    platform: str                                 # "shopify" | "wordpress"
+    site_base: str                                # public site URL, e.g. https://example.com
+    urls: _List[str] = Field(default_factory=list)  # pages to fix; empty = agent picks top pages
+    max_items: int = Field(8, ge=1, le=25)
+    dry_run: bool = False
+    inject_schema: bool = True
+    # Shopify
+    shopify_store: str = ""                       # mystore.myshopify.com
+    shopify_token: str = ""
+    # WordPress (either an OAuth token for WordPress.com, or an application password for self-hosted)
+    wp_site_url: str = ""
+    wp_token: str = ""
+    wp_username: str = ""
+    wp_app_password: str = ""
+
+
+@app.post("/run/cms")
+def run_cms(req: CmsRunRequest, x_agent_key: _Optional[str] = Header(default=None)):
+    expected = os.getenv("AGENT_API_KEY")
+    if expected and x_agent_key != expected:
+        raise HTTPException(status_code=401, detail="Invalid agent key")
+
+    from cms_common import CmsAuthError, Log, init_openai, summarize
+    from shopify_agent import run_shopify_agent
+    from wordpress_agent import run_wordpress_agent
+
+    log = Log()
+    info = {}  # extra run details, e.g. the Shopify API version check
+    platform = req.platform.strip().lower()
+    urls = [u.strip() for u in req.urls if u and u.strip().startswith(("http://", "https://"))]
+    try:
+        init_openai()
+        if platform == "shopify":
+            results = run_shopify_agent(
+                req.shopify_store, req.shopify_token, req.site_base, urls,
+                max_items=req.max_items, dry_run=req.dry_run, inject_schema=req.inject_schema, log=log,
+                info=info,
+            )
+        elif platform == "wordpress":
+            results = run_wordpress_agent(
+                site_url=req.wp_site_url or req.site_base, site_base=req.site_base, urls=urls,
+                token=req.wp_token, username=req.wp_username, app_password=req.wp_app_password,
+                max_items=req.max_items, dry_run=req.dry_run, inject_schema=req.inject_schema, log=log,
+            )
+        else:
+            raise HTTPException(status_code=400, detail="platform must be 'shopify' or 'wordpress'")
+    except HTTPException:
+        raise
+    except (CmsAuthError, ValueError) as e:
+        return JSONResponse(status_code=400, content={
+            "success": False, "platform": platform, "error": str(e), "stdout": log.text(), "stderr": str(e), **info})
+    except Exception as e:
+        logger.error(traceback.format_exc())
+        return JSONResponse(status_code=500, content={
+            "success": False, "platform": platform, "error": f"Internal error: {e}", "stdout": log.text(), "stderr": str(e)})
+
+    out = summarize(results, req.dry_run)
+    out.update({"platform": platform, "stdout": log.text(), "stderr": "", **info})
+    return out
+
+
+class ShopifyVersionCheckRequest(BaseModel):
+    shopify_store: str
+    shopify_token: str
+
+
+@app.post("/shopify/version-check")
+def shopify_version_check(req: ShopifyVersionCheckRequest, x_agent_key: _Optional[str] = Header(default=None)):
+    """Is SHOPIFY_API_VERSION still supported by Shopify? Returns the supported list and newest stable version."""
+    expected = os.getenv("AGENT_API_KEY")
+    if expected and x_agent_key != expected:
+        raise HTTPException(status_code=401, detail="Invalid agent key")
+
+    from cms_common import CmsAuthError
+    from shopify_agent import ShopifyClient
+
+    try:
+        return ShopifyClient(req.shopify_store, req.shopify_token).check_api_version()
+    except CmsAuthError as e:
+        return JSONResponse(status_code=400, content={"ok": None, "status": "unknown", "message": str(e)})
+    except Exception as e:
+        logger.error(traceback.format_exc())
+        return JSONResponse(status_code=502, content={"ok": None, "status": "unknown", "message": f"Version check failed: {e}"})
+
+
 if __name__ == "__main__":
     # Render sets $PORT dynamically; the Dockerfile's CMD reads it directly,
     # but this path (running `python api.py` locally) needs the same fallback.
