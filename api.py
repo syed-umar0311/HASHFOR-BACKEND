@@ -105,6 +105,53 @@ async def health_check():
     return JSONResponse({"status": "healthy"})
 
 
+# ---------------------------------------------------------------------------
+# Run tickets. The Hashfor app checks plan / free-trial expiry / credits in
+# /api/user/autonomous-ticket and signs a short-lived ticket with AGENT_API_KEY;
+# the browser forwards it here. If AGENT_API_KEY is unset, /run stays open
+# (same opt-in behaviour as /run/cms). Format: base64url(json).base64url(hmac)
+# ---------------------------------------------------------------------------
+import base64
+import hashlib
+import hmac
+import json
+import time
+
+_used_ticket_ids: dict = {}  # jti -> exp; single-use within this process
+
+
+def _b64url_decode(part: str) -> bytes:
+    return base64.urlsafe_b64decode(part + "=" * (-len(part) % 4))
+
+
+def verify_run_ticket(ticket: str, agents: str) -> None:
+    secret = os.getenv("AGENT_API_KEY")
+    if not secret:
+        return
+    try:
+        payload_part, sig_part = (ticket or "").split(".", 1)
+        expected = hmac.new(secret.encode(), payload_part.encode(), hashlib.sha256).digest()
+        if not hmac.compare_digest(expected, _b64url_decode(sig_part)):
+            raise ValueError("bad signature")
+        payload = json.loads(_b64url_decode(payload_part))
+    except Exception:
+        raise HTTPException(status_code=403, detail="This run isn't authorized. Please start it again from your dashboard.")
+
+    now = int(time.time())
+    for jti, exp in list(_used_ticket_ids.items()):
+        if exp < now:
+            _used_ticket_ids.pop(jti, None)
+
+    if int(payload.get("exp", 0)) < now:
+        raise HTTPException(status_code=403, detail="This run ticket has expired. Please start the run again.")
+    if payload.get("agents") != agents:
+        raise HTTPException(status_code=403, detail="That agent isn't included in your plan.")
+    jti = payload.get("jti")
+    if not jti or jti in _used_ticket_ids:
+        raise HTTPException(status_code=403, detail="This run ticket was already used. Please start the run again.")
+    _used_ticket_ids[jti] = int(payload["exp"])
+
+
 @app.post("/run")
 async def run_optimizer(
     background_tasks: BackgroundTasks,
@@ -117,8 +164,10 @@ async def run_optimizer(
     agents: str = Form("onpage,technical"),
     locales: str = Form(""),
     csv_file: UploadFile = Form(...),
+    run_ticket: str = Form(""),
 ):
     logger.info(f"Received optimization request: agents={agents}")
+    verify_run_ticket(run_ticket, agents)
     csv_path = None
     try:
         if not os.getenv("OPENAI_API_KEY"):

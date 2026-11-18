@@ -14,8 +14,9 @@ services:
       # Set this to your actual Vercel URL, e.g. https://your-app.vercel.app
       - key: ALLOWED_ORIGINS
         sync: false
-      # Shared secret for POST /run/cms (Shopify/WordPress auto-push). Set the same
-      # value as AGENT_API_KEY in the Hashfor app. Optional but recommended.
+      # Shared secret for POST /run/cms (Shopify/WordPress auto-push) and for
+      # verifying the signed run tickets on POST /run (GitHub Autonomous). Set the
+      # same value as AGENT_API_KEY in the Hashfor app. Optional but recommended.
       - key: AGENT_API_KEY
         sync: false
       - key: PYTHONUNBUFFERED
